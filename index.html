@@ -1,0 +1,307 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>IoT Sensor Dashboard</title>
+
+<script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+
+<style>
+* {box-sizing:border-box}
+
+body {
+  margin:0;
+  padding:22px;
+  font-family:Arial,sans-serif;
+  background:#080f1d;
+  color:#f1f5f9;
+}
+
+.container {max-width:1050px;margin:auto}
+
+header {
+  display:flex;
+  justify-content:space-between;
+  align-items:center;
+  flex-wrap:wrap;
+  gap:15px;
+  padding:15px 0 25px;
+}
+
+h1 {font-size:27px;margin:0}
+.subtitle {color:#91a4bd;margin-top:8px}
+
+.status {
+  background:#172a3c;
+  border:1px solid #29465a;
+  padding:10px 15px;
+  border-radius:25px;
+  color:#fbbf24;
+  font-size:13px;
+}
+
+.grid {
+  display:grid;
+  grid-template-columns:repeat(2,1fr);
+  gap:16px;
+}
+
+.card {
+  background:#142137;
+  border:1px solid #263b57;
+  padding:23px;
+  border-radius:17px;
+}
+
+.card h3 {
+  color:#9cacc2;
+  font-size:13px;
+  letter-spacing:1px;
+}
+
+.value {
+  font-size:36px;
+  font-weight:bold;
+  margin:18px 0 8px;
+}
+
+.small {color:#93a4ba;font-size:13px}
+
+.track {
+  background:#293a53;
+  height:9px;
+  border-radius:20px;
+  overflow:hidden;
+  margin:17px 0;
+}
+
+.fill {
+  background:#35c9db;
+  height:100%;
+  width:0%;
+  transition:width .4s;
+}
+
+.section {
+  background:#142137;
+  border:1px solid #263b57;
+  border-radius:17px;
+  padding:20px;
+  margin-top:20px;
+}
+
+canvas {
+  width:100%;
+  height:190px;
+}
+
+.info {
+  color:#91a4bd;
+  font-size:13px;
+  margin-top:20px;
+  text-align:center;
+}
+
+@media(max-width:550px) {
+  body {padding:13px}
+  .grid {grid-template-columns:1fr}
+  h1 {font-size:23px}
+  .value {font-size:32px}
+}
+</style>
+</head>
+
+<body>
+<div class="container">
+
+<header>
+  <div>
+    <h1>IoT Sensor Dashboard</h1>
+    <div class="subtitle">ESP32 | Real-time Sensor Monitoring</div>
+  </div>
+  <div class="status" id="status">● Connecting MQTT...</div>
+</header>
+
+<div class="grid">
+
+  <div class="card">
+    <h3>🌡️ TEMPERATURE</h3>
+    <div class="value"><span id="temp">--</span> °C</div>
+    <div class="small">DHT22 sensor</div>
+  </div>
+
+  <div class="card">
+    <h3>💧 HUMIDITY</h3>
+    <div class="value"><span id="humidity">--</span> %</div>
+    <div class="small">DHT22 sensor</div>
+  </div>
+
+  <div class="card">
+    <h3>☀️ LIGHT INTENSITY</h3>
+    <div class="value"><span id="light">--</span> %</div>
+    <div class="track"><div class="fill" id="lightBar"></div></div>
+    <div class="small">LDR ADC: <span id="ldrRaw">--</span></div>
+  </div>
+
+  <div class="card">
+    <h3>🎛️ POTENTIOMETER</h3>
+    <div class="value"><span id="pot">--</span> %</div>
+    <div class="track"><div class="fill" id="potBar"></div></div>
+    <div class="small">ADC: <span id="potRaw">--</span></div>
+  </div>
+
+</div>
+
+<div class="section">
+  <h3>LIVE SENSOR HISTORY</h3>
+  <canvas id="chart" width="900" height="220"></canvas>
+  <div class="small">Last 30 received readings · Temperature (°C)</div>
+</div>
+
+<div class="info">
+  ESP32 IoT Dashboard · MQTT Live Connection
+  <br>
+  Last received: <span id="updated">Waiting for data</span>
+  <br>
+  <span id="sensorState">Waiting for ESP32...</span>
+</div>
+
+</div>
+
+<script>
+
+// Must match the MQTT topic in sketch.ino
+const TOPIC = "iot-sensor-dashboard-2026-73921/data";
+
+const statusElement = document.getElementById("status");
+
+const chart = document.getElementById("chart");
+const ctx = chart.getContext("2d");
+
+let history = [];
+
+function drawChart() {
+  const w = chart.width;
+  const h = chart.height;
+
+  ctx.clearRect(0,0,w,h);
+
+  ctx.strokeStyle = "#31435c";
+  ctx.lineWidth = 1;
+
+  for(let i=0;i<5;i++) {
+    let y = 15 + i*45;
+    ctx.beginPath();
+    ctx.moveTo(35,y);
+    ctx.lineTo(w-10,y);
+    ctx.stroke();
+  }
+
+  if(history.length < 2) return;
+
+  const min = Math.min(...history.map(x=>x.temp),0);
+  const max = Math.max(...history.map(x=>x.temp),40);
+  const range = Math.max(max-min,1);
+
+  ctx.beginPath();
+  ctx.strokeStyle = "#39d6e5";
+  ctx.lineWidth = 3;
+
+  history.forEach((item,i)=>{
+    const x = 35 + i*(w-55)/(29);
+    const y = h-15 - ((item.temp-min)/range)*(h-35);
+
+    if(i===0) ctx.moveTo(x,y);
+    else ctx.lineTo(x,y);
+  });
+
+  ctx.stroke();
+}
+
+function updateDashboard(d) {
+
+  if(d.dhtValid) {
+    document.getElementById("temp").textContent =
+      Number(d.temperature).toFixed(1);
+
+    document.getElementById("humidity").textContent =
+      Number(d.humidity).toFixed(1);
+
+    document.getElementById("sensorState").textContent =
+      "DHT22 sensor working";
+  } else {
+    document.getElementById("temp").textContent = "ERROR";
+    document.getElementById("humidity").textContent = "ERROR";
+    document.getElementById("sensorState").textContent =
+      "Check DHT22 connection";
+  }
+
+  document.getElementById("light").textContent = d.light;
+  document.getElementById("pot").textContent = d.pot;
+
+  document.getElementById("ldrRaw").textContent = d.ldrRaw;
+  document.getElementById("potRaw").textContent = d.potRaw;
+
+  document.getElementById("lightBar").style.width =
+    d.light + "%";
+
+  document.getElementById("potBar").style.width =
+    d.pot + "%";
+
+  document.getElementById("updated").textContent =
+    new Date().toLocaleTimeString();
+
+  if(d.dhtValid) {
+    history.push({temp:Number(d.temperature)});
+    if(history.length>30) history.shift();
+    drawChart();
+  }
+}
+
+// Connect browser to HiveMQ using secure WebSockets
+const client = mqtt.connect(
+  "wss://broker.hivemq.com:8884/mqtt",
+  {
+    clientId:"dashboard_" +
+      Math.random().toString(16).substring(2),
+    clean:true,
+    connectTimeout:10000,
+    reconnectPeriod:3000
+  }
+);
+
+client.on("connect",()=>{
+  statusElement.textContent = "● MQTT CONNECTED";
+  statusElement.style.color = "#42dfaa";
+
+  client.subscribe(TOPIC,(error)=>{
+    if(error) {
+      statusElement.textContent = "● SUBSCRIPTION ERROR";
+    }
+  });
+});
+
+client.on("message",(topic,message)=>{
+  try {
+    const data = JSON.parse(message.toString());
+    updateDashboard(data);
+  } catch(error) {
+    console.error("Invalid sensor data",error);
+  }
+});
+
+client.on("reconnect",()=>{
+  statusElement.textContent = "● RECONNECTING...";
+  statusElement.style.color = "#fbbf24";
+});
+
+client.on("error",(error)=>{
+  console.error("MQTT error:",error);
+  statusElement.textContent = "● CONNECTION ERROR";
+  statusElement.style.color = "#ff7272";
+});
+
+</script>
+</body>
+</html>
